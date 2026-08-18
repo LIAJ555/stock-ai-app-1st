@@ -1,6 +1,5 @@
 streamlit
 yfinance
-pandas
 matplotlib
-japanize-matplotlib
 google-genai
+pandas
