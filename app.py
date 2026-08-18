@@ -51,7 +51,7 @@ def get_stock_data(code):
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     hist["RSI"] = 100 - (100 / (1 + rs))
-    
+    #
     info = ticker.info
     raw_yield = info.get("dividendYield") or 0
     div_yield = raw_yield * 100 if 0 < raw_yield < 1 else raw_yield
