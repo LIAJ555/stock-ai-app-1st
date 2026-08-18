@@ -1,4 +1,5 @@
 import os
+import time
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -26,7 +27,6 @@ api_key = st.secrets.get("GEMINI_API_KEY")
 @st.cache_data(ttl=60)
 def get_stock_data(ticker_symbol):
     symbol = f"{ticker_symbol}.T"
-    # 当日データまで確実に含めるため翌日を指定
     end_date = datetime.today() + timedelta(days=1)
     start_date = end_date - timedelta(days=180)
     
@@ -97,8 +97,9 @@ if run_btn:
 3. **投資スタンス・アドバイス**（短期・中長期それぞれの視点）
 """
 
+                    # 安定モデルの指定
                     response = client.models.generate_content(
-                        model='gemini-3.6-flash',
+                        model='gemini-2.0-flash',
                         contents=prompt,
                     )
 
