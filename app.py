@@ -97,14 +97,24 @@ if run_btn:
 3. **投資スタンス・アドバイス**（短期・中長期それぞれの視点）
 """
 
-                    # 安定モデルの指定
-                    response = client.models.generate_content(
-                        model='gemini-2.0-flash',
-                        contents=prompt,
-                    )
+                    # リトライ付きでAPI呼び出し
+                    response_text = None
+                    for attempt in range(3):
+                        try:
+                            response = client.models.generate_content(
+                                model='gemini-3.6-flash',
+                                contents=prompt,
+                            )
+                            response_text = response.text
+                            break
+                        except Exception as req_err:
+                            if "503" in str(req_err) and attempt < 2:
+                                time.sleep(2)
+                                continue
+                            raise req_err
 
                     st.subheader("🤖 AIテクニカル診断レポート")
-                    st.write(response.text)
+                    st.write(response_text)
 
             except Exception as e:
                 st.error(f"エラーが発生しました: {str(e)}")
