@@ -23,13 +23,13 @@ with col2:
 # APIキーの取得
 api_key = st.secrets.get("GEMINI_API_KEY")
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_stock_data(ticker_symbol):
     symbol = f"{ticker_symbol}.T"
-    end_date = datetime.today()
+    # 当日データまで確実に含めるため翌日を指定
+    end_date = datetime.today() + timedelta(days=1)
     start_date = end_date - timedelta(days=180)
     
-    # レート制限を回避しやすい download 関数を利用
     df = yf.download(symbol, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), progress=False)
     
     if isinstance(df.columns, pd.MultiIndex):
@@ -43,7 +43,7 @@ if run_btn:
     elif not api_key:
         st.error("Gemini APIキーが設定されていません。StreamlitのSecretsを確認してください。")
     else:
-        with st.spinner("株価データを取得・分析中..."):
+        with st.spinner("株価データを取得・AI分析中..."):
             try:
                 hist = get_stock_data(code)
                 
@@ -70,12 +70,13 @@ if run_btn:
                     st.pyplot(fig)
 
                     # 直近データの抽出
+                    latest_date = hist.index[-1].strftime('%Y-%m-%d')
                     latest_price = hist['Close'].iloc[-1]
                     prev_price = hist['Close'].iloc[-2] if len(hist) > 1 else latest_price
                     change = latest_price - prev_price
                     pct_change = (change / prev_price) * 100
 
-                    st.metric("現在値 / 終値", f"¥{latest_price:,.1f}", f"{change:+,.1f} ({pct_change:+.2f}%)")
+                    st.metric(f"最新終値 / 現在値 ({latest_date} 時点)", f"¥{latest_price:,.1f}", f"{change:+,.1f} ({pct_change:+.2f}%)")
 
                     # Gemini による分析
                     client = genai.Client(api_key=api_key)
@@ -84,7 +85,8 @@ if run_btn:
 あなたはプロの株式アナリストです。以下の東証銘柄データをもとに、テクニカル分析と投資判断のポイントを簡潔・論理的に解説してください。
 
 【銘柄コード】: {code}
-【直近株価】: ¥{latest_price:,.1f} (前日比: {pct_change:+.2f}%)
+【基準日】: {latest_date}
+【株価】: ¥{latest_price:,.1f} (前日比: {pct_change:+.2f}%)
 【25日移動平均】: ¥{hist['SMA25'].iloc[-1]:,.1f}
 【75日移動平均】: ¥{hist['SMA75'].iloc[-1]:,.1f}
 【過去5日間の終値推移】: {list(hist['Close'].tail(5).round(1))}
@@ -96,7 +98,7 @@ if run_btn:
 """
 
                     response = client.models.generate_content(
-                        model='gemini-2.5-flash',
+                        model='gemini-3.6-flash',
                         contents=prompt,
                     )
 
