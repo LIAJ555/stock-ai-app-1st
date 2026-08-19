@@ -114,7 +114,17 @@ if run_btn:
 
                     # 財務・コンセンサス指標の整理
                     pe_ratio = info.get('trailingPE', info.get('forwardPE', None))
-                    pb_ratio = info.get('priceToBook', None)
+                    
+                    # PBR厳密計算 (BPS直接割算)
+                    book_value = info.get('bookValue', None)
+                    raw_pbr = info.get('priceToBook', None)
+                    if book_value and book_value > 0 and latest_price > 0:
+                        pbr_val = latest_price / book_value
+                    elif raw_pbr:
+                        pbr_val = raw_pbr
+                    else:
+                        pbr_val = None
+
                     mkt_cap = info.get('marketCap', None)
                     mkt_cap_str = f"¥{mkt_cap / 1_000_000_000_000:.2f} 兆" if mkt_cap and mkt_cap >= 1_000_000_000_000 else (f"¥{mkt_cap / 100_000_000:.0f} 億" if mkt_cap else "N/A")
 
@@ -157,58 +167,63 @@ if run_btn:
 
                     row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
                     row2_col1.metric("PER (実績/予想)", f"{pe_ratio:.1f} 倍" if pe_ratio else "N/A")
-                    row2_col2.metric("PBR", f"{pb_ratio:.2f} 倍" if pb_ratio else "N/A")
+                    row2_col2.metric("PBR", f"{pbr_val:.2f} 倍" if pbr_val else "N/A")
                     row2_col3.metric("配当利回り (年間配当)", div_yield_str)
                     row2_col4.metric("52週レンジ", f"¥{info.get('fiftyTwoWeekLow', 0):,.0f} - ¥{info.get('fiftyTwoWeekHigh', 0):,.0f}" if info.get('fiftyTwoWeekHigh') else "N/A")
 
-                    # チャート描画 (上下4段)
-                    fig, (ax1, ax2, ax3, ax4) = plt.subplots(
-                        4, 1, figsize=(10, 10), 
-                        gridspec_kw={'height_ratios': [3, 1, 1.2, 1.2]}, 
+                    # チャート描画 (上下5段構成)
+                    fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(
+                        5, 1, figsize=(10, 13), 
+                        gridspec_kw={'height_ratios': [2.5, 2.5, 1.0, 1.2, 1.2]}, 
                         sharex=True
                     )
 
-                    # --- 段1: 株価・移動平均・ボリンジャーバンド・目標株価ライン ---
+                    # --- 段1: 株価・移動平均線 & 目標株価ライン ---
                     ax1.plot(hist.index, hist['Close'], label='Close', color='#1f77b4', linewidth=1.5)
                     ax1.plot(hist.index, hist['SMA25'], label='25 SMA', color='#ff7f0e', linestyle='--', alpha=0.8)
                     ax1.plot(hist.index, hist['SMA75'], label='75 SMA', color='#2ca02c', linestyle='--', alpha=0.8)
-                    ax1.plot(hist.index, hist['BB_Upper'], label='BB +2σ', color='#9467bd', linestyle=':', alpha=0.7)
-                    ax1.plot(hist.index, hist['BB_Lower'], label='BB -2σ', color='#9467bd', linestyle=':', alpha=0.7)
-                    ax1.fill_between(hist.index, hist['BB_Lower'], hist['BB_Upper'], color='#9467bd', alpha=0.08)
-                    
                     if target_price:
                         ax1.axhline(target_price, color='#d62728', linestyle='-.', alpha=0.8, label=f'Target (¥{target_price:,.0f})')
-
-                    ax1.set_title(f"Technical Chart: {company_name} ({code}.T)", fontsize=12)
-                    ax1.set_ylabel("Price (JPY)")
+                    ax1.set_title(f"Technical & Fundamental Charts: {company_name} ({code}.T)", fontsize=12)
+                    ax1.set_ylabel("Price & SMA")
                     ax1.grid(True, linestyle=":", alpha=0.6)
                     ax1.legend(loc='upper left', fontsize=8)
 
-                    # --- 段2: 出来高 ---
-                    ax2.bar(hist.index, hist['Volume'], color='#7f7f7f', alpha=0.5, label='Volume')
-                    ax2.plot(hist.index, hist['Vol_SMA5'], color='#d62728', linewidth=1, label='Vol 5-SMA')
-                    ax2.set_ylabel("Volume")
+                    # --- 段2: ボリンジャーバンド (独立チャート) ---
+                    ax2.plot(hist.index, hist['Close'], label='Close', color='#1f77b4', linewidth=1.2)
+                    ax2.plot(hist.index, hist['SMA25'], label='25 SMA (Mid)', color='#ff7f0e', linestyle='--', alpha=0.6)
+                    ax2.plot(hist.index, hist['BB_Upper'], label='BB +2σ', color='#9467bd', linestyle=':', alpha=0.8)
+                    ax2.plot(hist.index, hist['BB_Lower'], label='BB -2σ', color='#9467bd', linestyle=':', alpha=0.8)
+                    ax2.fill_between(hist.index, hist['BB_Lower'], hist['BB_Upper'], color='#9467bd', alpha=0.12)
+                    ax2.set_ylabel("Bollinger Bands")
                     ax2.grid(True, linestyle=":", alpha=0.6)
                     ax2.legend(loc='upper left', fontsize=8)
 
-                    # --- 段3: MACD ---
-                    ax3.plot(hist.index, hist['MACD'], label='MACD', color='#1f77b4', linewidth=1.2)
-                    ax3.plot(hist.index, hist['Signal'], label='Signal', color='#d62728', linestyle='--', linewidth=1.2)
-                    colors = ['#ff7f0e' if val >= 0 else '#1f77b4' for val in hist['Hist']]
-                    ax3.bar(hist.index, hist['Hist'], color=colors, alpha=0.4, width=0.8, label='Hist')
-                    ax3.axhline(0, color='gray', linestyle=':', alpha=0.5)
-                    ax3.set_ylabel("MACD")
+                    # --- 段3: 出来高 ---
+                    ax3.bar(hist.index, hist['Volume'], color='#7f7f7f', alpha=0.5, label='Volume')
+                    ax3.plot(hist.index, hist['Vol_SMA5'], color='#d62728', linewidth=1, label='Vol 5-SMA')
+                    ax3.set_ylabel("Volume")
                     ax3.grid(True, linestyle=":", alpha=0.6)
                     ax3.legend(loc='upper left', fontsize=8)
 
-                    # --- 段4: RSI ---
-                    ax4.plot(hist.index, hist['RSI'], label='RSI (14)', color='#e377c2', linewidth=1.2)
-                    ax4.axhline(70, color='red', linestyle='--', alpha=0.6)
-                    ax4.axhline(30, color='blue', linestyle='--', alpha=0.6)
-                    ax4.set_ylim(0, 100)
-                    ax4.set_ylabel("RSI")
+                    # --- 段4: MACD ---
+                    ax4.plot(hist.index, hist['MACD'], label='MACD', color='#1f77b4', linewidth=1.2)
+                    ax4.plot(hist.index, hist['Signal'], label='Signal', color='#d62728', linestyle='--', linewidth=1.2)
+                    colors = ['#ff7f0e' if val >= 0 else '#1f77b4' for val in hist['Hist']]
+                    ax4.bar(hist.index, hist['Hist'], color=colors, alpha=0.4, width=0.8, label='Hist')
+                    ax4.axhline(0, color='gray', linestyle=':', alpha=0.5)
+                    ax4.set_ylabel("MACD")
                     ax4.grid(True, linestyle=":", alpha=0.6)
                     ax4.legend(loc='upper left', fontsize=8)
+
+                    # --- 段5: RSI ---
+                    ax5.plot(hist.index, hist['RSI'], label='RSI (14)', color='#e377c2', linewidth=1.2)
+                    ax5.axhline(70, color='red', linestyle='--', alpha=0.6)
+                    ax5.axhline(30, color='blue', linestyle='--', alpha=0.6)
+                    ax5.set_ylim(0, 100)
+                    ax5.set_ylabel("RSI")
+                    ax5.grid(True, linestyle=":", alpha=0.6)
+                    ax5.legend(loc='upper left', fontsize=8)
 
                     fig.tight_layout()
                     st.pyplot(fig)
@@ -237,6 +252,7 @@ if run_btn:
                     client = genai.Client(api_key=api_key)
                     
                     target_info_text = f"¥{target_price:,.0f} (現在値からの乖離率: {upside_pct:+.1f}%) [レンジ: ¥{target_low:,.0f}〜¥{target_high:,.0f} / カバー数: {num_analysts}名 / 判断: {recommendation}]" if target_price else "データなし"
+                    pbr_text = f"{pbr_val:.2f}倍" if pbr_val else "N/A"
 
                     prompt = f"""
 あなたは百戦錬磨のシニア株式ストラテジストです。
@@ -251,7 +267,7 @@ if run_btn:
 
 【ファンダメンタルズ & バリュエーション】
 - PER: {pe_ratio:.1f}倍 (※未取得の場合はN/A)
-- PBR: {pb_ratio:.2f}倍 (※未取得の場合はN/A)
+- PBR: {pbr_text}
 - 配当利回り: {div_yield_str}
 - 時価総額: {mkt_cap_str}
 
@@ -269,7 +285,7 @@ if run_btn:
 以下の構成で分かりやすく、メリハリのある投資レポートを作成してください：
 1. **総合診断サマリー**（現在の株価位置付けを一言で言うと？）
 2. **アナリストコンセンサス評価**（市場のプロの目標株価と現在値の乖離、強気/弱気の度合い）
-3. **テクニカル分析**（トレンドの方向性、オシレーターの過熱感、出来高の裏付け）
+3. **テクニカル分析**（トレンドの方向性、ボリンジャーバンドの収縮/拡大、オシレーターの過熱感、出来高の裏付け）
 4. **ファンダメンタルズ & バリュエーション評価**（PER/PBRや配当利回りから見た割安度・魅力度）
 5. **ニュース・外部要因の影響**（直近の材料や市場のテーマ性）
 6. **投資戦略シナリオ**（エントリーポイント、ターゲット上値、損切り/サポートラインの目安）
