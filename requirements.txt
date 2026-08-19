@@ -3,3 +3,4 @@ yfinance
 matplotlib
 google-genai
 pandas
+feedparser
