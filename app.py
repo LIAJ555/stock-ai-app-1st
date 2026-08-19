@@ -1,16 +1,18 @@
 import os
 import time
+import urllib.parse
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
+import feedparser
 from datetime import datetime, timedelta
 from google import genai
 
 # ページ設定
-st.set_page_config(page_title="日本株 AIフルテクニカル診断", layout="wide")
+st.set_page_config(page_title="日本株 AI統合分析（テクニカル × ファンダ × ニュース）", layout="wide")
 
-st.title("📈 日本株 AIフルテクニカル診断 & 分析ツール")
+st.title("📈 日本株 AI統合分析 & 投資診断ツール")
 
 # 銘柄入力
 col1, col2 = st.columns([3, 1])
@@ -19,7 +21,7 @@ with col1:
 with col2:
     st.write("")
     st.write("")
-    run_btn = st.button("🚀 フル診断実行", type="primary")
+    run_btn = st.button("🚀 総合診断実行", type="primary")
 
 # APIキーの取得
 api_key = st.secrets.get("GEMINI_API_KEY")
@@ -27,15 +29,36 @@ api_key = st.secrets.get("GEMINI_API_KEY")
 @st.cache_data(ttl=60)
 def get_stock_data(ticker_symbol):
     symbol = f"{ticker_symbol}.T"
+    ticker = yf.Ticker(symbol)
+    
+    # 過去200日の日足株価
     end_date = datetime.today() + timedelta(days=1)
     start_date = end_date - timedelta(days=200)
-    
-    df = yf.download(symbol, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), progress=False)
+    df = ticker.history(start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
     
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
         
-    return df
+    # 企業基本情報
+    info = ticker.info if hasattr(ticker, "info") else {}
+    return df, info
+
+@st.cache_data(ttl=300)
+def get_company_news(company_name, ticker_code):
+    """Google News RSS から銘柄に関連するニュース見出しを取得"""
+    query = f"{company_name} {ticker_code} 株"
+    encoded_query = urllib.parse.quote(query)
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
+    
+    feed = feedparser.parse(rss_url)
+    news_items = []
+    for entry in feed.entries[:5]:  # 直近5件
+        news_items.append({
+            "title": entry.title,
+            "link": entry.link,
+            "published": getattr(entry, "published", "")
+        })
+    return news_items
 
 if run_btn:
     if not code:
@@ -43,13 +66,16 @@ if run_btn:
     elif not api_key:
         st.error("Gemini APIキーが設定されていません。StreamlitのSecretsを確認してください。")
     else:
-        with st.spinner("株価データ取得・テクニカル指標計算・AI分析中..."):
+        with st.spinner("株価・財務データ取得・ニュース収集・AI分析中..."):
             try:
-                hist = get_stock_data(code)
+                hist, info = get_stock_data(code)
                 
                 if hist.empty:
                     st.error(f"銘柄コード {code} のデータが見つかりませんでした。東証4桁コードを確認してください。")
                 else:
+                    # 企業名の抽出
+                    company_name = info.get('shortName', info.get('longName', f'コード {code}'))
+                    
                     # 1. 移動平均線 (SMA)
                     hist['SMA25'] = hist['Close'].rolling(window=25).mean()
                     hist['SMA75'] = hist['Close'].rolling(window=75).mean()
@@ -76,6 +102,33 @@ if run_btn:
                     # 出来高の5日移動平均
                     hist['Vol_SMA5'] = hist['Volume'].rolling(window=5).mean()
 
+                    # ニュース取得
+                    news_list = get_company_news(company_name, code)
+
+                    # 画面表示: 企業名と主要指標カード
+                    st.subheader(f"🏢 {company_name} ({code}.T)")
+                    
+                    latest_price = hist['Close'].iloc[-1]
+                    prev_price = hist['Close'].iloc[-2] if len(hist) > 1 else latest_price
+                    change = latest_price - prev_price
+                    pct_change = (change / prev_price) * 100
+                    latest_date = hist.index[-1].strftime('%Y-%m-%d')
+
+                    # 財務指標の整理
+                    pe_ratio = info.get('trailingPE', info.get('forwardPE', None))
+                    pb_ratio = info.get('priceToBook', None)
+                    div_yield = info.get('dividendYield', None)
+                    div_yield_str = f"{div_yield * 100:.2f}%" if div_yield else "N/A"
+                    mkt_cap = info.get('marketCap', None)
+                    mkt_cap_str = f"¥{mkt_cap / 1_000_000_000_000:.2f} 兆" if mkt_cap and mkt_cap >= 1_000_000_000_000 else (f"¥{mkt_cap / 100_000_000:.0f} 億" if mkt_cap else "N/A")
+
+                    m1, m2, m3, m4, m5 = st.columns(5)
+                    m1.metric("現在値", f"¥{latest_price:,.1f}", f"{change:+,.1f} ({pct_change:+.2f}%)")
+                    m2.metric("PER (実績/予想)", f"{pe_ratio:.1f} 倍" if pe_ratio else "N/A")
+                    m3.metric("PBR", f"{pb_ratio:.2f} 倍" if pb_ratio else "N/A")
+                    m4.metric("配当利回り", div_yield_str)
+                    m5.metric("時価総額", mkt_cap_str)
+
                     # チャート描画 (上下4段)
                     fig, (ax1, ax2, ax3, ax4) = plt.subplots(
                         4, 1, figsize=(10, 10), 
@@ -90,7 +143,7 @@ if run_btn:
                     ax1.plot(hist.index, hist['BB_Upper'], label='BB +2σ', color='#9467bd', linestyle=':', alpha=0.7)
                     ax1.plot(hist.index, hist['BB_Lower'], label='BB -2σ', color='#9467bd', linestyle=':', alpha=0.7)
                     ax1.fill_between(hist.index, hist['BB_Lower'], hist['BB_Upper'], color='#9467bd', alpha=0.08)
-                    ax1.set_title(f"Technical Analysis: {code}.T", fontsize=12)
+                    ax1.set_title(f"Technical Chart: {company_name} ({code}.T)", fontsize=12)
                     ax1.set_ylabel("Price (JPY)")
                     ax1.grid(True, linestyle=":", alpha=0.6)
                     ax1.legend(loc='upper left', fontsize=8)
@@ -124,13 +177,15 @@ if run_btn:
                     fig.tight_layout()
                     st.pyplot(fig)
 
-                    # 最新数値の抽出
-                    latest_date = hist.index[-1].strftime('%Y-%m-%d')
-                    latest_price = hist['Close'].iloc[-1]
-                    prev_price = hist['Close'].iloc[-2] if len(hist) > 1 else latest_price
-                    change = latest_price - prev_price
-                    pct_change = (change / prev_price) * 100
+                    # ニュースのアコーディオン表示
+                    with st.expander("📰 直近の関連ニュース・ヘッドライン（クリックで展開）", expanded=False):
+                        if news_list:
+                            for n in news_list:
+                                st.markdown(f"- [{n['title']}]({n['link']})")
+                        else:
+                            st.write("直近のヘッドラインニュースは見つかりませんでした。")
 
+                    # 最新数値の抽出
                     latest_vol = hist['Volume'].iloc[-1]
                     latest_rsi = hist['RSI'].iloc[-1]
                     latest_macd = hist['MACD'].iloc[-1]
@@ -139,30 +194,43 @@ if run_btn:
                     bb_u = hist['BB_Upper'].iloc[-1]
                     bb_l = hist['BB_Lower'].iloc[-1]
 
-                    st.metric(f"最新終値 / 現在値 ({latest_date} 時点)", f"¥{latest_price:,.1f}", f"{change:+,.1f} ({pct_change:+.2f}%)")
+                    # ニュースタイトル一覧文字列
+                    news_titles_str = "\n".join([f"- {n['title']}" for n in news_list]) if news_list else "特になし"
 
-                    # Gemini によるフルテクニカル分析
+                    # Gemini によるフル統合分析
                     client = genai.Client(api_key=api_key)
                     
                     prompt = f"""
-あなたは百戦錬磨のプロのテクニカル株式アナリストです。
-以下の東証銘柄データ（株価・移動平均線・ボリンジャーバンド・出来高・MACD・RSI）を統合的に分析し、投資判断とシナリオを分かりやすく解説してください。
+あなたは百戦錬磨のシニア株式ストラテジストです。
+以下の【企業基本・財務データ】【テクニカル指標】【直近ニュース】を多角的に統合分析し、プロの投資判断レポートを作成してください。
 
-【銘柄コード】: {code}
+【対象企業】: {company_name} (コード: {code}.T)
 【基準日】: {latest_date}
-【株価】: ¥{latest_price:,.1f} (前日比: {pct_change:+.2f}%)
-【移動平均】: 25日SMA=¥{hist['SMA25'].iloc[-1]:,.1f} / 75日SMA=¥{hist['SMA75'].iloc[-1]:,.1f}
-【ボリンジャーバンド(25日±2σ)】: 上限=¥{bb_u:,.1f} / 下限=¥{bb_l:,.1f}
-【出来高】: {int(latest_vol):,} 株 (5日平均比: {latest_vol / hist['Vol_SMA5'].iloc[-1]:.2f}倍)
-【MACD (12,26,9)】: MACD={latest_macd:.2f} / Signal={latest_signal:.2f} / Hist={latest_hist:.2f}
-【RSI (14日)】: {latest_rsi:.1f}%
-【過去5日間の終値】: {list(hist['Close'].tail(5).round(1))}
+【現在株価】: ¥{latest_price:,.1f} (前日比: {pct_change:+.2f}%)
 
-以下の項目に沿ってレポートを作成してください：
-1. **トレンド & チャート形状**（移動平均の並び・傾き、ボリンジャーバンドのバンド幅と位置）
-2. **オシレーター & モメンタム診断**（RSIの過熱感、MACDのシグナル・モメンタム）
-3. **出来高の評価**（商いの増減とトレンドの整合性）
-4. **テクニカル総合評価 & 投資戦略**（上値・下値のメド、短期・中長期それぞれの売買スタンス）
+【ファンダメンタルズ & バリュエーション】
+- PER: {pe_ratio:.1f}倍 (※未取得の場合はN/A)
+- PBR: {pb_ratio:.2f}倍 (※未取得の場合はN/A)
+- 配当利回り: {div_yield_str}
+- 時価総額: {mkt_cap_str}
+
+【テクニカル指標】
+- 移動平均: 25日SMA=¥{hist['SMA25'].iloc[-1]:,.1f} / 75日SMA=¥{hist['SMA75'].iloc[-1]:,.1f}
+- ボリンジャーバンド(25日±2σ): 上限=¥{bb_u:,.1f} / 下限=¥{bb_l:,.1f}
+- 出来高: {int(latest_vol):,} 株 (5日平均比: {latest_vol / hist['Vol_SMA5'].iloc[-1]:.2f}倍)
+- MACD (12,26,9): MACD={latest_macd:.2f} / Signal={latest_signal:.2f} / Hist={latest_hist:.2f}
+- RSI (14日): {latest_rsi:.1f}%
+
+【直近の関連ニュース見出し】
+{news_titles_str}
+
+---
+以下の構成で分かりやすく、メリハリのある投資レポートを作成してください：
+1. **総合診断サマリー**（現在の株価位置付けを一言で言うと？）
+2. **テクニカル分析**（トレンドの方向性、オシレーターの過熱感、出来高の裏付け）
+3. **ファンダメンタルズ & バリュエーション評価**（PER/PBRや配当利回りから見た割安度・魅力度）
+4. **ニュース・外部要因の影響**（直近の材料や市場のテーマ性）
+5. **投資戦略シナリオ**（エントリーポイント、ターゲット上値、損切り/サポートラインの目安）
 """
 
                     # API呼び出し
@@ -181,7 +249,7 @@ if run_btn:
                                 continue
                             raise req_err
 
-                    st.subheader("🤖 AIフルテクニカル診断レポート")
+                    st.subheader("🤖 AI総合診断レポート（テクニカル × ファンダ × ニュース）")
                     st.write(response_text)
 
             except Exception as e:
