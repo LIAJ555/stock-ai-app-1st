@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from google import genai
 
 # ページ設定
-st.set_page_config(page_title="日本株 AI統合分析（テクニカル × ファンダ × ニュース）", layout="wide")
+st.set_page_config(page_title="日本株 AI統合分析（テクニカル × ファンダ × コンセンサス）", layout="wide")
 
 st.title("📈 日本株 AI統合分析 & 投資診断ツール")
 
@@ -66,7 +66,7 @@ if run_btn:
     elif not api_key:
         st.error("Gemini APIキーが設定されていません。StreamlitのSecretsを確認してください。")
     else:
-        with st.spinner("株価・財務データ取得・ニュース収集・AI分析中..."):
+        with st.spinner("株価・コンセンサス・財務データ取得・ニュース収集・AI分析中..."):
             try:
                 hist, info = get_stock_data(code)
                 
@@ -105,29 +105,61 @@ if run_btn:
                     # ニュース取得
                     news_list = get_company_news(company_name, code)
 
-                    # 画面表示: 企業名と主要指標カード
-                    st.subheader(f"🏢 {company_name} ({code}.T)")
-                    
+                    # 株価関連の数値
                     latest_price = hist['Close'].iloc[-1]
                     prev_price = hist['Close'].iloc[-2] if len(hist) > 1 else latest_price
                     change = latest_price - prev_price
                     pct_change = (change / prev_price) * 100
                     latest_date = hist.index[-1].strftime('%Y-%m-%d')
 
-                    # 財務指標の整理
+                    # 財務・コンセンサス指標の整理
                     pe_ratio = info.get('trailingPE', info.get('forwardPE', None))
                     pb_ratio = info.get('priceToBook', None)
-                    div_yield = info.get('dividendYield', None)
-                    div_yield_str = f"{div_yield * 100:.2f}%" if div_yield else "N/A"
                     mkt_cap = info.get('marketCap', None)
                     mkt_cap_str = f"¥{mkt_cap / 1_000_000_000_000:.2f} 兆" if mkt_cap and mkt_cap >= 1_000_000_000_000 else (f"¥{mkt_cap / 100_000_000:.0f} 億" if mkt_cap else "N/A")
 
-                    m1, m2, m3, m4, m5 = st.columns(5)
-                    m1.metric("現在値", f"¥{latest_price:,.1f}", f"{change:+,.1f} ({pct_change:+.2f}%)")
-                    m2.metric("PER (実績/予想)", f"{pe_ratio:.1f} 倍" if pe_ratio else "N/A")
-                    m3.metric("PBR", f"{pb_ratio:.2f} 倍" if pb_ratio else "N/A")
-                    m4.metric("配当利回り", div_yield_str)
-                    m5.metric("時価総額", mkt_cap_str)
+                    # 配当利回りの補正計算（年間配当金ベース）
+                    div_rate = info.get('dividendRate', None)
+                    raw_div_yield = info.get('dividendYield', None)
+
+                    if div_rate and latest_price > 0:
+                        calc_yield = (div_rate / latest_price) * 100
+                        div_yield_str = f"{calc_yield:.2f}% (¥{div_rate:.0f})"
+                    elif raw_div_yield is not None:
+                        actual_yield = raw_div_yield if raw_div_yield > 1.0 else raw_div_yield * 100
+                        div_yield_str = f"{actual_yield:.2f}%"
+                    else:
+                        div_yield_str = "N/A"
+
+                    # アナリスト目標株価・コンセンサス
+                    target_price = info.get('targetMeanPrice', None)
+                    target_high = info.get('targetHighPrice', None)
+                    target_low = info.get('targetLowPrice', None)
+                    num_analysts = info.get('numberOfAnalystOpinions', None)
+                    recommendation = info.get('recommendationKey', 'N/A').replace('_', ' ').title()
+
+                    if target_price and latest_price > 0:
+                        upside_pct = ((target_price - latest_price) / latest_price) * 100
+                        target_str = f"¥{target_price:,.0f}"
+                        target_delta = f"{upside_pct:+.1f}% (乖離率)"
+                    else:
+                        target_str = "N/A"
+                        target_delta = None
+
+                    # 画面表示: 企業名と主要指標カード（2段構成）
+                    st.subheader(f"🏢 {company_name} ({code}.T)")
+                    
+                    row1_col1, row1_col2, row1_col3, row1_col4 = st.columns(4)
+                    row1_col1.metric("現在値", f"¥{latest_price:,.1f}", f"{change:+,.1f} ({pct_change:+.2f}%)")
+                    row1_col2.metric("アナリスト目標株価(平均)", target_str, target_delta)
+                    row1_col3.metric("コンセンサス判断", recommendation, f"{num_analysts}名のアナリスト" if num_analysts else None)
+                    row1_col4.metric("時価総額", mkt_cap_str)
+
+                    row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
+                    row2_col1.metric("PER (実績/予想)", f"{pe_ratio:.1f} 倍" if pe_ratio else "N/A")
+                    row2_col2.metric("PBR", f"{pb_ratio:.2f} 倍" if pb_ratio else "N/A")
+                    row2_col3.metric("配当利回り (年間配当)", div_yield_str)
+                    row2_col4.metric("52週レンジ", f"¥{info.get('fiftyTwoWeekLow', 0):,.0f} - ¥{info.get('fiftyTwoWeekHigh', 0):,.0f}" if info.get('fiftyTwoWeekHigh') else "N/A")
 
                     # チャート描画 (上下4段)
                     fig, (ax1, ax2, ax3, ax4) = plt.subplots(
@@ -136,13 +168,17 @@ if run_btn:
                         sharex=True
                     )
 
-                    # --- 段1: 株価・移動平均・ボリンジャーバンド ---
+                    # --- 段1: 株価・移動平均・ボリンジャーバンド・目標株価ライン ---
                     ax1.plot(hist.index, hist['Close'], label='Close', color='#1f77b4', linewidth=1.5)
                     ax1.plot(hist.index, hist['SMA25'], label='25 SMA', color='#ff7f0e', linestyle='--', alpha=0.8)
                     ax1.plot(hist.index, hist['SMA75'], label='75 SMA', color='#2ca02c', linestyle='--', alpha=0.8)
                     ax1.plot(hist.index, hist['BB_Upper'], label='BB +2σ', color='#9467bd', linestyle=':', alpha=0.7)
                     ax1.plot(hist.index, hist['BB_Lower'], label='BB -2σ', color='#9467bd', linestyle=':', alpha=0.7)
                     ax1.fill_between(hist.index, hist['BB_Lower'], hist['BB_Upper'], color='#9467bd', alpha=0.08)
+                    
+                    if target_price:
+                        ax1.axhline(target_price, color='#d62728', linestyle='-.', alpha=0.8, label=f'Target (¥{target_price:,.0f})')
+
                     ax1.set_title(f"Technical Chart: {company_name} ({code}.T)", fontsize=12)
                     ax1.set_ylabel("Price (JPY)")
                     ax1.grid(True, linestyle=":", alpha=0.6)
@@ -200,13 +236,18 @@ if run_btn:
                     # Gemini によるフル統合分析
                     client = genai.Client(api_key=api_key)
                     
+                    target_info_text = f"¥{target_price:,.0f} (現在値からの乖離率: {upside_pct:+.1f}%) [レンジ: ¥{target_low:,.0f}〜¥{target_high:,.0f} / カバー数: {num_analysts}名 / 判断: {recommendation}]" if target_price else "データなし"
+
                     prompt = f"""
 あなたは百戦錬磨のシニア株式ストラテジストです。
-以下の【企業基本・財務データ】【テクニカル指標】【直近ニュース】を多角的に統合分析し、プロの投資判断レポートを作成してください。
+以下の【企業基本・財務データ】【アナリストコンセンサス】【テクニカル指標】【直近ニュース】を多角的に統合分析し、プロの投資判断レポートを作成してください。
 
 【対象企業】: {company_name} (コード: {code}.T)
 【基準日】: {latest_date}
 【現在株価】: ¥{latest_price:,.1f} (前日比: {pct_change:+.2f}%)
+
+【アナリストコンセンサス & 目標株価】
+- コンセンサス目標株価: {target_info_text}
 
 【ファンダメンタルズ & バリュエーション】
 - PER: {pe_ratio:.1f}倍 (※未取得の場合はN/A)
@@ -227,10 +268,11 @@ if run_btn:
 ---
 以下の構成で分かりやすく、メリハリのある投資レポートを作成してください：
 1. **総合診断サマリー**（現在の株価位置付けを一言で言うと？）
-2. **テクニカル分析**（トレンドの方向性、オシレーターの過熱感、出来高の裏付け）
-3. **ファンダメンタルズ & バリュエーション評価**（PER/PBRや配当利回りから見た割安度・魅力度）
-4. **ニュース・外部要因の影響**（直近の材料や市場のテーマ性）
-5. **投資戦略シナリオ**（エントリーポイント、ターゲット上値、損切り/サポートラインの目安）
+2. **アナリストコンセンサス評価**（市場のプロの目標株価と現在値の乖離、強気/弱気の度合い）
+3. **テクニカル分析**（トレンドの方向性、オシレーターの過熱感、出来高の裏付け）
+4. **ファンダメンタルズ & バリュエーション評価**（PER/PBRや配当利回りから見た割安度・魅力度）
+5. **ニュース・外部要因の影響**（直近の材料や市場のテーマ性）
+6. **投資戦略シナリオ**（エントリーポイント、ターゲット上値、損切り/サポートラインの目安）
 """
 
                     # API呼び出し
@@ -249,7 +291,7 @@ if run_btn:
                                 continue
                             raise req_err
 
-                    st.subheader("🤖 AI総合診断レポート（テクニカル × ファンダ × ニュース）")
+                    st.subheader("🤖 AI総合診断レポート（テクニカル × ファンダ × コンセンサス）")
                     st.write(response_text)
 
             except Exception as e:
